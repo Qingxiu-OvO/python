@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>Mini Terraria - 在线版</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-family: sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 20px;
+        }
+        #gameCanvas {
+            border: 4px solid #333;
+            background-color: #87CEEB; /* Sky Blue */
+            touch-action: none; /* 禁用移动端触摸滚动 */
+        }
+        #controls {
+            margin-top: 15px;
+            text-align: left;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: white;
+            width: 800px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>迷你泰拉瑞亚 (Mini Terraria)</h1>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <div id="controls">
+    <h3>🎮 操作指南</h3>
+    <ul>
+        <li>**移动/跳跃**: `W`, `A`, `D` 键</li>
+        <li>**挖掘 (破坏方块)**: `鼠标左键`</li>
+        <li>**建造 (放置方块)**: `鼠标右键`</li>
+        <li>**切换方块**: 数字键 `1` (泥土), `2` (草地), `3` (石头)</li>
+    </ul>
+    <p>
+        **当前方块**: <span id="current-block-display" style="font-weight: bold; color: blue;">泥土</span>
+    </p>
+    <p style="color: red;">*提示：在放置方块时，浏览器可能会弹出右键菜单，点击**取消**即可。*</p>
+</div>
+
+    <script>
+        // 请将以下所有内容，替换您 mini_terraria.html 文件中的整个 <script> 标签内容。
+
+// --- 配置 ---
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
+const TILE_SIZE = 32;
+const ROWS = Math.floor(CANVAS_HEIGHT / TILE_SIZE);
+const COLS = Math.floor(CANVAS_WIDTH / TILE_SIZE);
+const FPS = 60;
+
+
+// 方块ID和颜色定义
+const BLOCK = {
+    AIR: 0,
+    DIRT: 1,
+    GRASS: 2,
+    STONE: 3,
+    WOOD: 4, 
+    LEAF: 5, 
+    COLORS: ['#87CEEB', '#654321', '#228B22', '#808080', '#8B4513', '#4CAF50'], 
+    NAMES: ['空气', '泥土', '草地', '石头', '木头', '叶子']
+};
+
+// --- 初始化 ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let gameWorld = [];
+let keys = {};
+let slimes = []; 
+let itemsOnGround = []; 
+let gameOver = false; // 新增：游戏结束标志
+
+// 物品栏数据结构
+let inventory = {
+    [BLOCK.DIRT]: 0,
+    [BLOCK.GRASS]: 0,
+    [BLOCK.STONE]: 0,
+    [BLOCK.WOOD]: 0,
+    [BLOCK.LEAF]: 0,
+};
+let selectedSlot = 1;
+
+// 玩家对象 (新增生命值和无敌时间)
+let player = {
+    x: TILE_SIZE * 5,
+    y: TILE_SIZE * 5,
+    width: 20,
+    height: 30, 
+    velX: 0, // 新增：用于击退
+    velY: 0,
+    speed: 4,
+    jumpPower: -8,
+    gravity: 0.4,
+    grounded: false,
+    maxHealth: 100,
+    health: 100, // 初始生命值
+    invulnerabilityTimer: 0 // 无敌帧计时器 (单位: 帧)
+};
+
+// --- 辅助函数 ---
+
+function shadeColor(color, percent) {
+    var f=parseInt(color.slice(1),16),t=percent<0?0:255,p=percent<0?percent*-1:percent,R=f>>16,G=(f>>8)&0x00ff,B=f&0x0000ff;
+    return "#"+(0x1000000+(Math.round((t-R)*p)+R)*0x10000+(Math.round((t-G)*p)+G)*0x100+(Math.round((t-B)*p)+B)).toString(16).slice(1);
+}
+
+function isTileSolid(r, c) {
+    if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+        return gameWorld[r][c] !== BLOCK.AIR;
+    }
+    return false;
+}
+
+// 矩形碰撞检测函数 (AABB)
+function checkRectCollision(rect1, rect2) {
+    return (
+        rect1.x < rect2.x + rect2.width &&
+        rect1.x + rect1.width > rect2.x &&
+        rect1.y < rect2.y + rect2.height &&
+        rect1.y + rect1.height > rect2.y
+    );
+}
+
+function spawnSlimes(count) {
+    for (let i = 0; i < count; i++) {
+        let spawnX, spawnY;
+        let spawned = false;
+        while (!spawned) {
+            spawnX = Math.floor(Math.random() * COLS) * TILE_SIZE;
+            spawnY = Math.floor(Math.random() * (ROWS * 0.5 - 5) + 5) * TILE_SIZE; 
+            
+            if (isTileSolid(Math.floor(spawnY / TILE_SIZE) + 1, Math.floor(spawnX / TILE_SIZE)) &&
+                !isTileSolid(Math.floor(spawnY / TILE_SIZE), Math.floor(spawnX / TILE_SIZE)) &&
+                !isTileSolid(Math.floor(spawnY / TILE_SIZE), Math.floor(spawnX / TILE_SIZE) + 1)) {
+                spawned = true;
+            }
+        }
+        slimes.push({
+            x: spawnX,
+            y: spawnY,
+            width: 28, 
+            height: 20,
+            velY: 0,
+            speed: 1, 
+            gravity: 0.4,
+            grounded: false,
+            direction: Math.random() < 0.5 ? 1 : -1 
+        });
+    }
+}
+
+function checkCollision(rect, dx, dy, isPlayer = false) {
+    // ... (碰撞逻辑保持不变，确保它能处理 isPlayer 逻辑)
+    let nextX = rect.x + dx;
+    let nextY = rect.y + dy;
+    let hitX = false;
+    let hitY = false;
+    let grounded = false;
+
+    let tempRectX = { x: nextX, y: rect.y, width: rect.width, height: rect.height };
+    const xTileCheckStart = Math.floor(Math.min(rect.x, nextX) / TILE_SIZE);
+    const xTileCheckEnd = Math.ceil(Math.max(rect.x + rect.width, nextX + rect.width) / TILE_SIZE);
+    const yTileCheckStart = Math.floor(rect.y / TILE_SIZE);
+    const yTileCheckEnd = Math.ceil((rect.y + rect.height) / TILE_SIZE);
+
+    for (let r = yTileCheckStart; r < yTileCheckEnd; r++) {
+        for (let c = xTileCheckStart; c < xTileCheckEnd; c++) {
+            if (isTileSolid(r, c)) {
+                const tileRect = { x: c * TILE_SIZE, y: r * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE };
+                
+                if (dx !== 0 && checkRectCollision(tempRectX, tileRect)) 
+                {
+                    if (isPlayer) { 
+                        if (isTileSolid(r - 1, c) || (rect.height > TILE_SIZE)) {
+                            hitX = true;
+                            // 停止 horizontal 移动
+                            if (dx > 0) nextX = tileRect.x - rect.width; 
+                            if (dx < 0) nextX = tileRect.x + TILE_SIZE;  
+                            rect.velX = 0; // 清除击退速度
+                        } else {
+                            // 爬台阶
+                            nextY -= TILE_SIZE;
+                            nextX = rect.x + dx; 
+                            tempRectX.y = nextY; 
+                        }
+                        if (!hitX) continue;
+                    } else { 
+                        hitX = true;
+                        if (dx > 0) nextX = tileRect.x - rect.width; 
+                        if (dx < 0) nextX = tileRect.x + TILE_SIZE;  
+                    }
+                }
+            }
+        }
+    }
+    
+    rect.x = nextX; 
+
+    let tempRectY = { x: rect.x, y: nextY, width: rect.width, height: rect.height };
+    const yTileCheckStart_Y = Math.floor(Math.min(rect.y, nextY) / TILE_SIZE);
+    const yTileCheckEnd_Y = Math.ceil(Math.max(rect.y + rect.height, nextY + rect.height) / TILE_SIZE);
+    
+    for (let r = yTileCheckStart_Y; r < yTileCheckEnd_Y; r++) {
+        for (let c = xTileCheckStart; c < xTileCheckEnd; c++) {
+             if (isTileSolid(r, c)) {
+                const tileRect = { x: c * TILE_SIZE, y: r * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE };
+                
+                if (checkRectCollision(tempRectY, tileRect))
+                {
+                    hitY = true;
+                    if (rect.velY > 0) { 
+                        nextY = tileRect.y - rect.height;
+                        grounded = true;
+                    } else if (rect.velY < 0) { 
+                        nextY = tileRect.y + TILE_SIZE;
+                    }
+                    rect.velY = 0; 
+                    tempRectY.y = nextY; 
+                }
+             }
+        }
+    }
+
+    return { x: nextX, y: nextY, hitX: hitX, hitY: hitY, grounded: grounded };
+}
+
+
+// --- 核心函数 ---
+
+function generateWorld() {
+    const groundLevel = Math.floor(ROWS * 0.3); 
+    
+    // 1. 生成基础地形
+    for (let r = 0; r < ROWS; r++) {
+        gameWorld[r] = [];
+        for (let c = 0; c < COLS; c++) {
+            if (r < groundLevel) {
+                gameWorld[r][c] = BLOCK.AIR;
+            } else if (r === groundLevel) {
+                gameWorld[r][c] = BLOCK.GRASS;
+            } else {
+                if (Math.random() < 0.1) {
+                    gameWorld[r][c] = BLOCK.STONE;
+                } else {
+                    gameWorld[r][c] = BLOCK.DIRT;
+                }
+            }
+        }
+    }
+
+    // 2. 树木生成逻辑 (保持不变)
+    const TALL_TREE_HEIGHT = 4;
+    const CANOPY_RADIUS = 2; 
+    const TREE_SPAWN_CHANCE = 0.05;
+
+    for (let c = 0; c < COLS; c++) {
+        if (gameWorld[groundLevel][c] === BLOCK.GRASS && Math.random() < TREE_SPAWN_CHANCE) {
+            let spaceIsClear = true;
+            for (let r = groundLevel - TALL_TREE_HEIGHT - CANOPY_RADIUS; r < groundLevel; r++) {
+                if (r >= 0 && gameWorld[r][c] !== BLOCK.AIR) {
+                    spaceIsClear = false;
+                    break;
+                }
+            }
+            
+            if (spaceIsClear) {
+                for (let h = 1; h <= TALL_TREE_HEIGHT; h++) {
+                    gameWorld[groundLevel - h][c] = BLOCK.WOOD;
+                }
+                const canopyCenterR = groundLevel - TALL_TREE_HEIGHT; 
+                
+                for (let r = canopyCenterR - CANOPY_RADIUS; r <= canopyCenterR + CANOPY_RADIUS; r++) {
+                    for (let c_offset = -CANOPY_RADIUS; c_offset <= CANOPY_RADIUS; c_offset++) {
+                        const currentC = c + c_offset;
+                        if (currentC >= 0 && currentC < COLS && r >= 0) {
+                            const distSq = c_offset * c_offset + (r - canopyCenterR) * (r - canopyCenterR);
+                            if (distSq <= CANOPY_RADIUS * CANOPY_RADIUS + 1) {
+                                if (gameWorld[r][currentC] !== BLOCK.WOOD) {
+                                    if (Math.random() > 0.1) {
+                                        gameWorld[r][currentC] = BLOCK.LEAF;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 初始化物品栏：给玩家一些启动资源
+    inventory[BLOCK.DIRT] = 10;
+    inventory[BLOCK.WOOD] = 5;
+
+    spawnSlimes(5);
+}
+
+function spawnSlimes(count) {
+    for (let i = 0; i < count; i++) {
+        let spawnX, spawnY;
+        let spawned = false;
+        while (!spawned) {
+            spawnX = Math.floor(Math.random() * COLS) * TILE_SIZE;
+            spawnY = Math.floor(Math.random() * (ROWS * 0.5 - 5) + 5) * TILE_SIZE; 
+            
+            if (isTileSolid(Math.floor(spawnY / TILE_SIZE) + 1, Math.floor(spawnX / TILE_SIZE)) &&
+                !isTileSolid(Math.floor(spawnY / TILE_SIZE), Math.floor(spawnX / TILE_SIZE)) &&
+                !isTileSolid(Math.floor(spawnY / TILE_SIZE), Math.floor(spawnX / TILE_SIZE) + 1)) {
+                spawned = true;
+            }
+        }
+        slimes.push({
+            x: spawnX,
+            y: spawnY,
+            width: 28, 
+            height: 20,
+            velY: 0,
+            speed: 1, 
+            gravity: 0.4,
+            grounded: false,
+            direction: Math.random() < 0.5 ? 1 : -1 
+        });
+    }
+}
+
+
+function updatePlayer() {
+    if (gameOver) return;
+
+    let dx = 0;
+    
+    // 1. 输入处理
+    if (keys['a'] || keys['A']) dx = -player.speed;
+    if (keys['d'] || keys['D']) dx = player.speed;
+    
+    // 2. 衰减击退速度
+    player.velX *= 0.85; // 摩擦力
+    if (Math.abs(player.velX) < 0.5) player.velX = 0;
+
+    // 3. 施加重力
+    player.velY += player.gravity;
+    if (player.velY > 10) player.velY = 10; 
+    let dy = player.velY;
+    
+    // 4. 跳跃
+    if ((keys['w'] || keys['W']) && player.grounded) {
+        player.velY = player.jumpPower;
+        dy = player.velY;
+    }
+    
+    // 5. 组合移动向量 (输入 + 击退)
+    let finalDX = dx + player.velX;
+
+    // 6. 碰撞检查和位置更新
+    const collisionResult = checkCollision(player, finalDX, dy, true);
+    
+    player.x = collisionResult.x;
+    player.y = collisionResult.y;
+    player.grounded = collisionResult.grounded;
+
+    // 7. 更新无敌时间
+    if (player.invulnerabilityTimer > 0) {
+        player.invulnerabilityTimer--;
+    }
+    
+    // 8. 死亡检查
+    if (player.health <= 0) {
+        gameOver = true;
+    }
+}
+
+function updateSlimes() {
+    if (gameOver) return;
+    
+    for (let i = 0; i < slimes.length; i++) {
+        let slime = slimes[i];
+        let dx = slime.speed * slime.direction;
+
+        slime.velY += slime.gravity;
+        if (slime.velY > 10) slime.velY = 10;
+        let dy = slime.velY;
+
+        const collisionResult = checkCollision(slime, dx, dy, false);
+
+        slime.x = collisionResult.x;
+        slime.y = collisionResult.y;
+        slime.grounded = collisionResult.grounded;
+
+        if (collisionResult.hitX) {
+            slime.direction *= -1;
+        } else {
+            const frontX = slime.x + slime.width * slime.direction;
+            const groundTileBelowFront = isTileSolid(
+                Math.floor((slime.y + slime.height + 1) / TILE_SIZE), 
+                Math.floor(frontX / TILE_SIZE)
+            );
+            if (!groundTileBelowFront && slime.grounded) { 
+                slime.direction *= -1;
+            }
+        }
+        
+        // *** 史莱姆对玩家的伤害检测 ***
+        if (checkRectCollision(slime, player) && player.invulnerabilityTimer === 0) {
+            
+            player.health -= 10; // 受到 10 点伤害
+            player.invulnerabilityTimer = 60; // 1秒无敌 (60帧)
+            
+            // 击退效果
+            const knockbackPower = 6;
+            const direction = player.x < slime.x ? -1 : 1; // 玩家在史莱姆左边，击退向左 (-1)
+            player.velX = direction * knockbackPower;
+            player.velY = player.jumpPower * 0.5; // 稍微向上击飞
+        }
+    }
+}
+
+function updateItems() {
+    if (gameOver) return;
+    
+    for (let i = itemsOnGround.length - 1; i >= 0; i--) {
+        let item = itemsOnGround[i];
+
+        // 1. 应用重力
+        item.velY += item.gravity;
+        if (item.velY > 5) item.velY = 5;
+        let dy = item.velY;
+
+        // 2. 碰撞检测 (简化版)
+        item.y += dy;
+
+        const tileR = Math.floor((item.y + item.height) / TILE_SIZE);
+        const tileC = Math.floor(item.x / TILE_SIZE);
+
+        if (isTileSolid(tileR, tileC)) {
+            item.y = tileR * TILE_SIZE - item.height;
+            item.velY = 0;
+        }
+        
+        // 3. 拾取检测
+        const dx = (player.x + player.width / 2) - (item.x + item.width / 2);
+        const dyPick = (player.y + player.height / 2) - (item.y + item.height / 2);
+        const distance = Math.sqrt(dx * dx + dyPick * dyPick);
+
+        if (distance < TILE_SIZE * 0.75) { 
+            inventory[item.type] = (inventory[item.type] || 0) + 1;
+            itemsOnGround.splice(i, 1); 
+        }
+    }
+}
+
+
+// --- 绘制函数 ---
+
+function drawPlayer() {
+    const x = player.x;
+    const y = player.y;
+    const w = player.width;
+    const h = player.height;
+
+    ctx.save();
+    
+    // 如果玩家在无敌状态，闪烁 (每 4 帧绘制一次)
+    if (player.invulnerabilityTimer > 0 && Math.floor(player.invulnerabilityTimer / 4) % 2 === 0) {
+        ctx.globalAlpha = 0.5;
+    }
+    
+    // 1. 腿部/裤子
+    ctx.fillStyle = '#6F4E37'; 
+    ctx.fillRect(x, y + h - 10, w, 10);
+
+    // 2. 身体/上衣
+    ctx.fillStyle = '#4682B4'; 
+    ctx.fillRect(x, y + 8, w, 12);
+
+    // 3. 头部/皮肤
+    ctx.fillStyle = '#FFDBAC'; 
+    ctx.fillRect(x + 2, y, w - 4, 8);
+
+    // 4. 头发
+    ctx.fillStyle = '#4A322C'; 
+    ctx.fillRect(x + 2, y, w - 4, 4);
+    
+    // 5. 眼睛
+    ctx.fillStyle = 'white';
+    ctx.fillRect(x + 4, y + 3, 2, 2);
+    ctx.fillRect(x + w - 6, y + 3, 2, 2);
+
+    ctx.fillStyle = 'black';
+    ctx.fillRect(x + 4 + 1, y + 3 + 1, 2, 2);
+    ctx.fillRect(x + w - 6 + 1, y + 3 + 1, 2, 2);
+    
+    // 6. 轮廓
+    ctx.strokeStyle = 'black';
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.restore();
+}
+
+function drawSlime(slime) {
+    const x = slime.x;
+    const y = slime.y;
+    const w = slime.width;
+    const h = slime.height;
+
+    ctx.fillStyle = '#32CD32'; 
+    ctx.fillRect(x, y + h / 2, w, h / 2); 
+
+    ctx.beginPath();
+    ctx.arc(x + w / 2, y + h / 2, w / 2, Math.PI, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.fillStyle = 'white';
+    ctx.fillRect(x + w * 0.2, y + h * 0.4, 4, 4); 
+    ctx.fillRect(x + w * 0.8 - 4, y + h * 0.4, 4, 4); 
+
+    ctx.fillStyle = 'black';
+    ctx.fillRect(x + w * 0.2 + 1, y + h * 0.4 + 1, 2, 2); 
+    ctx.fillRect(x + w * 0.8 - 3, y + h * 0.4 + 1, 2, 2); 
+
+    ctx.strokeStyle = '#006400'; 
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y + h / 2, w, h / 2);
+    ctx.beginPath();
+    ctx.arc(x + w / 2, y + h / 2, w / 2, Math.PI, Math.PI * 2);
+    ctx.stroke();
+}
+
+function drawItems() {
+    for (let item of itemsOnGround) {
+        const size = item.width;
+        ctx.save();
+        ctx.translate(item.x, item.y);
+        
+        ctx.fillStyle = BLOCK.COLORS[item.type];
+        ctx.fillRect(0, 0, size, size);
+        
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0, 0, size, size);
+
+        ctx.restore();
+    }
+}
+
+function drawInventory() {
+    const startX = 10;
+    const startY = 10;
+    const slotSize = 40;
+    const padding = 5;
+    const maxSlots = 5;
+    
+    const itemKeys = [BLOCK.DIRT, BLOCK.GRASS, BLOCK.STONE, BLOCK.WOOD, BLOCK.LEAF];
+
+    for (let i = 0; i < maxSlots; i++) {
+        const x = startX + i * (slotSize + padding);
+        const y = startY;
+        const itemID = itemKeys[i];
+        const count = inventory[itemID];
+        
+        // 绘制槽位背景
+        ctx.fillStyle = '#333333';
+        ctx.fillRect(x, y, slotSize, slotSize);
+
+        // 绘制选中边框
+        if (i + 1 === selectedSlot) {
+            ctx.strokeStyle = 'yellow';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x, y, slotSize, slotSize);
+        } else {
+            ctx.strokeStyle = '#666666';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x, y, slotSize, slotSize);
+        }
+
+        // 绘制物品图标
+        if (count > 0 && itemID !== BLOCK.AIR) {
+            const iconSize = slotSize - 8;
+            ctx.fillStyle = BLOCK.COLORS[itemID];
+            ctx.fillRect(x + 4, y + 4, iconSize, iconSize);
+
+            // 绘制数量文本
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.textAlign = 'right';
+            ctx.fillText(count, x + slotSize - 3, y + slotSize - 3);
+        }
+    }
+    
+    // 更新 UI 面板上的当前物品名称
+    const currentItemID = itemKeys[selectedSlot - 1];
+    document.getElementById('current-block-display').textContent = BLOCK.NAMES[currentItemID] + (inventory[currentItemID] > 0 ? ` (${inventory[currentItemID]})` : ' (空)');
+}
+
+// *** 新增：绘制生命值 UI ***
+function drawHealthBar() {
+    const barX = CANVAS_WIDTH - 160;
+    const barY = 15;
+    const barWidth = 150;
+    const barHeight = 20;
+    
+    // 背景
+    ctx.fillStyle = '#333';
+    ctx.fillRect(barX, barY, barWidth, barHeight);
+    
+    // 血条
+    const currentWidth = (player.health / player.maxHealth) * barWidth;
+    ctx.fillStyle = 'red';
+    ctx.fillRect(barX, barY, currentWidth, barHeight);
+    
+    // 边框
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barX, barY, barWidth, barHeight);
+    
+    // 文本
+    ctx.fillStyle = 'white';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`HP: ${player.health}/${player.maxHealth}`, barX + barWidth / 2, barY + 15);
+}
+
+
+function drawGame() {
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // 绘制世界
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const tileID = gameWorld[r][c];
+            const tileX = c * TILE_SIZE;
+            const tileY = r * TILE_SIZE;
+
+            if (tileID !== BLOCK.AIR) {
+                const baseColor = BLOCK.COLORS[tileID];
+                let darkColor = shadeColor(baseColor, -0.2); 
+                let lightColor = shadeColor(baseColor, 0.2); 
+
+                ctx.fillStyle = baseColor;
+                ctx.fillRect(tileX, tileY, TILE_SIZE, TILE_SIZE);
+
+                for (let i = 0; i < 5; i++) { 
+                    const dotX = tileX + Math.floor(Math.random() * (TILE_SIZE - 2));
+                    const dotY = tileY + Math.floor(Math.random() * (TILE_SIZE - 2));
+                    ctx.fillStyle = Math.random() < 0.5 ? darkColor : lightColor;
+                    ctx.fillRect(dotX, dotY, 2, 2); 
+                }
+
+                ctx.strokeStyle = lightColor;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(tileX + 1, tileY + 1, TILE_SIZE - 2, TILE_SIZE - 2); 
+
+                ctx.strokeStyle = darkColor;
+                ctx.strokeRect(tileX, tileY, TILE_SIZE, TILE_SIZE); 
+            }
+        }
+    }
+
+    drawPlayer();
+
+    for (let slime of slimes) {
+        drawSlime(slime);
+    }
+    
+    drawItems(); 
+    drawInventory();
+    drawHealthBar(); // 绘制血条
+    
+    // 游戏结束画面
+    if (gameOver) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.fillStyle = 'red';
+        ctx.font = 'bold 60px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('游戏结束', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+        ctx.font = 'bold 30px sans-serif';
+        ctx.fillText('史莱姆打败了你！', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 50);
+    }
+}
+
+// --- 游戏循环 ---
+
+function gameLoop() {
+    if (!gameOver) {
+        updatePlayer();
+        updateSlimes(); 
+        updateItems(); 
+    }
+    drawGame();
+}
+
+// --- 事件监听 ---
+
+document.addEventListener('keydown', (e) => {
+    keys[e.key.toLowerCase()] = true;
+    
+    // 切换物品栏槽位 (1-5)
+    const slotKey = parseInt(e.key);
+    if (slotKey >= 1 && slotKey <= 5) {
+        selectedSlot = slotKey;
+    }
+    
+    e.preventDefault(); 
+});
+
+document.addEventListener('keyup', (e) => {
+    keys[e.key.toLowerCase()] = false;
+});
+
+canvas.addEventListener('mousedown', (e) => {
+    if (gameOver) return;
+    e.preventDefault(); 
+
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const col = Math.floor(mouseX / TILE_SIZE);
+    const row = Math.floor(mouseY / TILE_SIZE);
+
+    // 0: 左键 (挖掘)
+    if (e.button === 0) { 
+        const tileID = gameWorld[row][col];
+        if (tileID !== BLOCK.AIR) {
+            gameWorld[row][col] = BLOCK.AIR;
+            
+            itemsOnGround.push({
+                x: col * TILE_SIZE + TILE_SIZE / 4,
+                y: row * TILE_SIZE,
+                width: TILE_SIZE / 2,
+                height: TILE_SIZE / 2,
+                type: tileID,
+                velY: -5, 
+                gravity: 0.4
+            });
+        }
+    } 
+    // 2: 右键 (放置)
+    else if (e.button === 2) { 
+        const itemKeys = [BLOCK.DIRT, BLOCK.GRASS, BLOCK.STONE, BLOCK.WOOD, BLOCK.LEAF];
+        const itemToPlace = itemKeys[selectedSlot - 1];
+        
+        if (inventory[itemToPlace] > 0) {
+            const isPlayerCollision = (
+                player.x < col * TILE_SIZE + TILE_SIZE &&
+                player.x + player.width > col * TILE_SIZE &&
+                player.y < row * TILE_SIZE + TILE_SIZE &&
+                player.y + player.height > row * TILE_SIZE
+            );
+            
+            let isSlimeCollision = false;
+            for(let slime of slimes) {
+                if (checkRectCollision(slime, {x: col * TILE_SIZE, y: row * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE})) {
+                    isSlimeCollision = true;
+                    break;
+                }
+            }
+
+            if (gameWorld[row][col] === BLOCK.AIR && !isPlayerCollision && !isSlimeCollision) {
+                gameWorld[row][col] = itemToPlace;
+                inventory[itemToPlace] -= 1;
+            }
+        }
+    }
+});
+
+canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+});
+
+
+// --- 启动游戏 ---
+generateWorld();
+setInterval(gameLoop, 1000 / FPS);
+    </script>
+</body>
+</html>
