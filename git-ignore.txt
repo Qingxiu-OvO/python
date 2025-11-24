@@ -1,0 +1,27 @@
+# Python 编译和环境文件
+__pycache__/
+*.pyc
+*.pyd
+*.so
+.venv/
+venv/
+
+# Jupyter/VS Code 文件
+.ipynb_checkpoints/
+
+# macOS 文件 (这个文件通常在你同步时不会被系统阻止)
+.DS_Store
+
+# Matplotlib 缓存文件
+.matplotlib/
+
+# TensorFlow/Keras 日志文件 
+logs/
+tensorboard/
+
+# 自动生成的预测图片
+*.png
+*.jpg
+
+# Conda 缓存文件 (额外添加，防止它同步大量缓存)
+.conda/
