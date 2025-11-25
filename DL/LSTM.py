@@ -213,12 +213,12 @@ def main():
     N_ROUNDS = 5 # 5轮平均
 
     EXPERIMENTS = {
-        "Exp1_Normal": [64],                 
-        "Exp1_Wide":   [128],
-        "Exp2_Normal": [128, 64],  
-        "Exp2_Narrow": [64, 32],
-        "Exp2_Wide": [256, 128],
-        "Exp2_Same":   [128, 128],
+        "Exp2_1": [64, 32],  
+        "Exp2_2": [128, 64],
+        "Exp2_3": [256, 128],
+        "Exp2_4": [128, 32],
+        "Exp2_5": [256, 64],
+        "Exp2_6": [256, 32],
     }
 
     # 1. 数据准备
@@ -228,6 +228,26 @@ def main():
     train_scaled, test_inputs_scaled, scaler, test_df_target = split_and_scale(df, LOOK_BACK)
     X_train, y_train = create_xy(train_scaled, LOOK_BACK)
     X_test, y_test = create_xy(test_inputs_scaled, LOOK_BACK)
+
+    # ==============================================================================
+    # [优化]: 使用 tf.data.Dataset 构建高效数据流水线
+    # ==============================================================================
+    # 1. from_tensor_slices: 将 numpy 数组转换为 tf 数据集
+    train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+    
+    # 2. cache(): 将数据缓存在内存中，避免每个 epoch 重复从 CPU 复制到内存，大幅提升小数据集的训练速度
+    train_dataset = train_dataset.cache()
+    
+    # 3. shuffle(): 打乱数据，增加随机性，有助于模型收敛 (buffer_size 设为 1000)
+    train_dataset = train_dataset.shuffle(1000)
+    
+    # 4. batch(): 设置批次大小 (这里沿用定义的 BATCH_SIZE)
+    train_dataset = train_dataset.batch(BATCH_SIZE)
+    
+    # 5. prefetch(): 开启预取。当 GPU/模型在计算当前 batch 时，
+    #    CPU 已经在准备下一个 batch 的数据 (并行处理)，这是提高资源利用率的关键。
+    train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
+    # ==============================================================================
 
     # 真实价格 (用于评估)
     real_close = test_df_target['Close'].values
@@ -278,10 +298,12 @@ def main():
             tf.keras.backend.clear_session()
             
             model = build_generic_lstm_model(layers_config, (X_train.shape[1], X_train.shape[2]))
+            
+            # [修改]: 传入 train_dataset 代替 (X_train, y_train)，同时移除 batch_size 参数
             model.fit(
-                X_train, y_train, 
+                train_dataset,  # 使用 tf.data 构建的数据集
                 epochs=EPOCHS, 
-                batch_size=BATCH_SIZE, 
+                # batch_size=BATCH_SIZE, # [注意]: batch_size 已在 dataset 中定义，此处需移除
                 verbose=0, 
                 callbacks=[lr_schedule] 
             )
