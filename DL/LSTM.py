@@ -215,8 +215,10 @@ def main():
     EXPERIMENTS = {
         "Exp1_Normal": [64],                 
         "Exp1_Wide":   [128],
-        "Exp2_Narrow": [128, 64],  
-        "Exp3_Deep":   [128, 64, 32],
+        "Exp2_Normal": [128, 64],  
+        "Exp2_Narrow": [64, 32],
+        "Exp2_Wide": [256, 128],
+        "Exp2_Same":   [128, 128],
     }
 
     # 1. 数据准备
