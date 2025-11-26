@@ -1,3 +1,4 @@
+git-ignore.txt
 # Python 编译和环境文件
 __pycache__/
 *.pyc
@@ -5,6 +6,7 @@ __pycache__/
 *.so
 .venv/
 venv/
+DL/
 
 # Jupyter/VS Code 文件
 .ipynb_checkpoints/
@@ -25,3 +27,4 @@ tensorboard/
 
 # Conda 缓存文件 (额外添加，防止它同步大量缓存)
 .conda/
+.DS_Store
