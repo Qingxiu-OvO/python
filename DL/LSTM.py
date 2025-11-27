@@ -1,3 +1,4 @@
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -22,7 +23,6 @@ from typing import List, Tuple
 # ==============================================================================
 # 0. 基础设置 (设备、随机种子 & 字体配置)
 # ==============================================================================
-# [关键]: 自动检测 Mac 的 MPS (Metal Performance Shaders) 加速
 if torch.backends.mps.is_available():
     device = torch.device("mps")
     print("🚀以此设备运行: MPS (Apple Silicon GPU)")
@@ -109,18 +109,23 @@ def get_and_prepare_data(ticker: str = '000001.SS') -> pd.DataFrame:
     df['BB_Upper'] = df['MA20'] + 2 * df['Close'].rolling(window=20).std()
     df['BB_Lower'] = df['MA20'] - 2 * df['Close'].rolling(window=20).std()
     
-    # --- 预测目标: 对数收益率 ---
+    # --- [关键修改]: 更改预测目标 ---
+    # 目标 1: 收盘价收益率 (保持不变)
     df['Log_Ret_Close'] = np.log(df['Close'] / df['Close'].shift(1))
-    df['Log_Ret_High'] = np.log(df['High'] / df['High'].shift(1))
+    
+    # 目标 2: [修改] 改为预测 "最低价(Low)" 的收益率
+    # 逻辑: log(今日最低 / 昨日最低)
+    df['Log_Ret_Low'] = np.log(df['Low'] / df['Low'].shift(1))
 
     df = df.dropna()
     
+    # [修改]: 更新 feature_cols，把 High 换成 Low
     feature_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 
                     'MA10', 'MA20', 'RSI', 'MACD', 'Signal', 'BB_Upper', 'BB_Lower',
-                    'Log_Ret_High', 'Log_Ret_Close']
+                    'Log_Ret_Low', 'Log_Ret_Close'] # <--- 注意这里最后两列顺序
     df = df[feature_cols]
     
-    print(f"✅ 数据准备完成。特征数: {df.shape[1]-2}, 目标数: 2 (收益率)")
+    print(f"✅ 数据准备完成。特征数: {df.shape[1]-2}, 目标数: 2 (Low & Close)")
     return df
 
 # ==============================================================================
@@ -143,12 +148,13 @@ def split_and_scale(df: pd.DataFrame, look_back: int) -> tuple[np.ndarray, np.nd
 
 def create_xy(dataset: np.ndarray, look_back: int) -> tuple[np.ndarray, np.ndarray]:
     X, Y = [], []
-    idx_high_ret = -2
-    idx_close_ret = -1
+    # [修改]: 对应 feature_cols 的最后两列
+    idx_low_ret = -2   # 倒数第二列是 Log_Ret_Low
+    idx_close_ret = -1 # 最后一列是 Log_Ret_Close
     
     for i in range(look_back, len(dataset)):
         X.append(dataset[i-look_back:i, :])
-        Y.append([dataset[i, idx_high_ret], dataset[i, idx_close_ret]]) 
+        Y.append([dataset[i, idx_low_ret], dataset[i, idx_close_ret]]) 
         
     return np.array(X), np.array(Y)
 
@@ -161,25 +167,19 @@ class LSTMModel(nn.Module):
         self.layers = nn.ModuleList()
         self.dropouts = nn.ModuleList()
         
-        # 动态构建多层 LSTM
         prev_size = input_size
         for hidden_size in hidden_layer_sizes:
-            # batch_first=True 使得输入形状为 (batch, seq, feature)
             self.layers.append(nn.LSTM(prev_size, hidden_size, batch_first=True))
             self.dropouts.append(nn.Dropout(dropout_prob))
             prev_size = hidden_size
             
-        # 最终输出层
         self.fc = nn.Linear(prev_size, output_size)
 
     def forward(self, x):
-        # x shape: (batch, seq_len, input_size)
         out = x
         for i in range(len(self.layers)):
-            out, _ = self.layers[i](out) # out shape: (batch, seq, hidden)
+            out, _ = self.layers[i](out)
             out = self.dropouts[i](out)
-            
-        # 取最后一个时间步的输出
         out = out[:, -1, :] 
         out = self.fc(out)
         return out
@@ -187,28 +187,29 @@ class LSTMModel(nn.Module):
 # ==============================================================================
 # 4. 价格还原逻辑
 # ==============================================================================
+# [修改]: 参数名改为 prev_prices_low
 def recover_prices(pred_returns_scaled: np.ndarray, scaler: StandardScaler, 
-                   prev_prices_high: np.ndarray, prev_prices_close: np.ndarray, 
+                   prev_prices_low: np.ndarray, prev_prices_close: np.ndarray, 
                    feature_total_count: int) -> tuple[np.ndarray, np.ndarray]:
     
     dummy = np.zeros((len(pred_returns_scaled), feature_total_count))
-    dummy[:, -2] = pred_returns_scaled[:, 0]
-    dummy[:, -1] = pred_returns_scaled[:, 1]
+    dummy[:, -2] = pred_returns_scaled[:, 0] # 这里的 0 对应 Log_Ret_Low
+    dummy[:, -1] = pred_returns_scaled[:, 1] # 这里的 1 对应 Log_Ret_Close
     
     res_unscaled = scaler.inverse_transform(dummy)
-    pred_log_ret_high = res_unscaled[:, -2]
+    pred_log_ret_low = res_unscaled[:, -2]
     pred_log_ret_close = res_unscaled[:, -1]
     
-    rec_high = prev_prices_high * np.exp(pred_log_ret_high)
+    # [修改]: 还原最低价 = 昨日最低 * exp(预测最低收益率)
+    rec_low = prev_prices_low * np.exp(pred_log_ret_low)
     rec_close = prev_prices_close * np.exp(pred_log_ret_close)
     
-    return rec_high, rec_close
+    return rec_low, rec_close
 
-# [修改]: 增加返回 R2 Score
 def evaluate_predictions(real: np.ndarray, pred: np.ndarray) -> tuple[float, float, float]:
     rmse = np.sqrt(mean_squared_error(real, pred))
     mae = mean_absolute_error(real, pred)
-    r2 = r2_score(real, pred) # 计算 R平方
+    r2 = r2_score(real, pred)
     return rmse, mae, r2
 
 # ==============================================================================
@@ -233,17 +234,14 @@ def main():
     
     train_scaled, test_inputs_scaled, scaler, test_df_target = split_and_scale(df, LOOK_BACK)
     
-    # 转换为 Numpy
     X_train_np, y_train_np = create_xy(train_scaled, LOOK_BACK)
     X_test_np, y_test_np = create_xy(test_inputs_scaled, LOOK_BACK)
 
-    # 转换为 PyTorch Tensor 并移动到设备 (MPS)
     X_train_tensor = torch.tensor(X_train_np, dtype=torch.float32).to(device)
     y_train_tensor = torch.tensor(y_train_np, dtype=torch.float32).to(device)
     X_test_tensor = torch.tensor(X_test_np, dtype=torch.float32).to(device)
     y_test_tensor = torch.tensor(y_test_np, dtype=torch.float32).to(device)
 
-    # 使用 DataLoader 构建批次
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -253,86 +251,79 @@ def main():
     ])
     prev_date = df.index[df.index.get_loc(test_df_target.index[0]) - 1]
     
-    ref_prices_high = df['High'].loc[prev_date : test_df_target.index[-2]].values
+    # [修改]: 获取历史 "Low" 价格作为基准
+    ref_prices_low = df['Low'].loc[prev_date : test_df_target.index[-2]].values
     ref_prices_close = df['Close'].loc[prev_date : test_df_target.index[-2]].values
     
     real_close = test_df_target['Close'].values
-    real_high = test_df_target['High'].values
+    # [修改]: 获取真实 "Low" 价格用于评估
+    real_low = test_df_target['Low'].values
     dates = test_df_target.index
 
     final_results_summary = []
 
-    print(f"\n======== 开始 PyTorch 实验 (含 R2 得分) ========")
+    print(f"\n======== 开始 PyTorch 实验 (预测: 最低价 & 收盘价) ========")
 
     for exp_name, layers_config in EXPERIMENTS.items():
         print(f"\n>> [实验组]: {exp_name} 结构: {layers_config}")
         
         temp_maes = []
         temp_rmses = []
-        temp_r2s = [] # [修改]: 记录 R2
-        temp_pred_high_list = []
+        temp_r2s = []
+        temp_pred_low_list = []   # [修改] 变量名
         temp_pred_close_list = []
 
         for i in range(N_ROUNDS):
             print(f"   - 第 {i+1}/{N_ROUNDS} 次训练...", end="", flush=True)
-            
             set_seed(BASE_SEED + i)
             
             model = LSTMModel(input_size=X_train_np.shape[2], hidden_layer_sizes=layers_config).to(device)
             criterion = nn.MSELoss()
             optimizer = optim.Adam(model.parameters(), lr=0.001)
-            
+            # [修改]: 移除 verbose 参数以兼容新版 PyTorch
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-            # --- 训练循环 ---
             for epoch in range(EPOCHS):
                 model.train()
-                train_loss = 0.0
-                
                 for batch_X, batch_y in train_loader:
                     optimizer.zero_grad()
                     outputs = model(batch_X)
                     loss = criterion(outputs, batch_y)
                     loss.backward()
                     optimizer.step()
-                    train_loss += loss.item()
                 
                 model.eval()
                 with torch.no_grad():
                     val_outputs = model(X_test_tensor)
                     val_loss = criterion(val_outputs, y_test_tensor).item()
-                
                 scheduler.step(val_loss)
 
-            # --- 预测 ---
             model.eval()
             with torch.no_grad():
                 pred_rets_scaled_tensor = model(X_test_tensor)
                 pred_rets_scaled = pred_rets_scaled_tensor.cpu().numpy()
             
-            # 2. 还原
-            rec_high, rec_close = recover_prices(
+            # [修改]: 传入 ref_prices_low
+            rec_low, rec_close = recover_prices(
                 pred_rets_scaled, scaler, 
-                ref_prices_high, ref_prices_close, 
+                ref_prices_low, ref_prices_close, 
                 TOTAL_FEATURES
             )
             
-            # 3. 评估 [修改]: 接收 r2
             rmse, mae, r2 = evaluate_predictions(real_close, rec_close)
             
             temp_maes.append(mae)
             temp_rmses.append(rmse)
             temp_r2s.append(r2)
-            temp_pred_high_list.append(rec_high)
+            temp_pred_low_list.append(rec_low)
             temp_pred_close_list.append(rec_close)
             
             print(f" 完成. (MAE: {mae:.2f}, R2: {r2:.4f})")
 
-        # 计算平均
         avg_mae = np.mean(temp_maes)
         avg_rmse = np.mean(temp_rmses)
-        avg_r2 = np.mean(temp_r2s) # [修改]: 计算平均 R2
-        avg_pred_high = np.mean(np.array(temp_pred_high_list), axis=0)
+        avg_r2 = np.mean(temp_r2s)
+        avg_pred_low = np.mean(np.array(temp_pred_low_list), axis=0)
         avg_pred_close = np.mean(np.array(temp_pred_close_list), axis=0)
         
         print(f"   >> {exp_name} 平均 MAE: {avg_mae:.4f}, 平均 R2: {avg_r2:.4f}")
@@ -342,17 +333,16 @@ def main():
             "Structure": str(layers_config),
             "Avg_MAE": avg_mae,
             "Avg_RMSE": avg_rmse,
-            "Avg_R2": avg_r2, # [修改]: 添加到结果摘要
-            "Pred_High": avg_pred_high,
+            "Avg_R2": avg_r2,
+            "Pred_Low": avg_pred_low, # [修改]
             "Pred_Close": avg_pred_close
         })
 
     results_df = pd.DataFrame(final_results_summary).sort_values(by="Avg_MAE")
     
     print("\n" + "="*80)
-    print(f"最终实验报告 (PyTorch MPS 版)")
+    print(f"最终实验报告 (预测目标: Low & Close)")
     print("="*80)
-    # [修改]: 打印包含 R2 的表格
     print(results_df[["Experiment", "Structure", "Avg_MAE", "Avg_RMSE", "Avg_R2"]].to_string(index=False))
     
     best_exp = results_df.iloc[0]
@@ -363,9 +353,10 @@ def main():
     print(f"\n正在绘制最佳模型 ({best_name}) 的结果...")
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
-    ax1.set_title(f'上证 2025 最高价预测 (基于收益率预测还原, {best_name})', fontsize=14, fontproperties=FONT_PROP)
-    ax1.plot(dates, real_high, label='实际最高价', color='#d62728', linewidth=2)
-    ax1.plot(dates, best_exp["Pred_High"], label='预测最高价', color='#1f77b4', linestyle='--', linewidth=1.5)
+    # [修改]: 绘图标题和变量改为 Low
+    ax1.set_title(f'上证 2025 最低价预测 (基于收益率预测还原, {best_name})', fontsize=14, fontproperties=FONT_PROP)
+    ax1.plot(dates, real_low, label='实际最低价', color='#d62728', linewidth=2)
+    ax1.plot(dates, best_exp["Pred_Low"], label='预测最低价', color='#1f77b4', linestyle='--', linewidth=1.5)
     ax1.legend(loc='upper left', prop=FONT_PROP)
     ax1.grid(True, alpha=0.3)
     ax1.set_ylabel('价格', fontproperties=FONT_PROP)
@@ -382,7 +373,7 @@ def main():
     plt.gcf().autofmt_xdate()
     plt.tight_layout()
     
-    SAVE_NAME = f'PyTorch_Result_{best_name}.png'
+    SAVE_NAME = f'PyTorch_Result_{best_name}_LowClose.png'
     plt.savefig(SAVE_NAME, dpi=300)
     print(f"✅ 图表已保存至: {SAVE_NAME}")
 

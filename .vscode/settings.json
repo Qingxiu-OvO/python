@@ -1,4 +1,11 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python-envs.pythonProjects": []
+    // 全局回退：指向一个安全的、不带 PyTorch 的 Python 解释器
+    // (例如：系统自带的 /usr/bin/python3，或者 Homebrew 的主 Python)
+    "python.defaultInterpreterPath": "/usr/bin/python3", 
+
+    // 禁用自动激活，让子项目自己管理
+    "python.terminal.activateEnvironment": false, 
+    
+    // 终端启动时，保持当前目录不变 (让zshrc的激活脚本自己判断)
+    "terminal.integrated.cwd": null 
 }

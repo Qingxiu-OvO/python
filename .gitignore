@@ -28,3 +28,6 @@ tensorboard/
 # Conda 缓存文件 (额外添加，防止它同步大量缓存)
 .conda/
 .DS_Store
+.DS_Store
+.vscode/settings.json
+.DS_Store
